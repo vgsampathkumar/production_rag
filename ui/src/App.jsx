@@ -8,8 +8,7 @@ import UploadPanel from './components/UploadPanel.jsx'
 import CitationPanel from './components/CitationPanel.jsx'
 import TabBar from './components/TabBar.jsx'
 import NotebookTab from './components/NotebookTab.jsx'
-
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from './config.js'
 
 async function* parseSseStream(response) {
   const reader = response.body.getReader()

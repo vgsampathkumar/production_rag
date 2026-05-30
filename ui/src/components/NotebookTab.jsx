@@ -3,8 +3,7 @@ import { motion } from 'framer-motion'
 import NotebookGuide from './NotebookGuide.jsx'
 import SuggestedQuestions from './SuggestedQuestions.jsx'
 import DocumentSummaryCard from './DocumentSummaryCard.jsx'
-
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../config.js'
 
 export default function NotebookTab({ onAsk }) {
   const [notebookData, setNotebookData] = useState({ guide: null, summaries: {} })

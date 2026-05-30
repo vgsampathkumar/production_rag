@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../config.js'
 
 async function* parseSseStream(response) {
   const reader = response.body.getReader()

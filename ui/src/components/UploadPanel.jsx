@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../config.js'
 
 function DocumentRow({ doc, index }) {
   return (
