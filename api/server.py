@@ -20,6 +20,7 @@ from search import HybridSearchIndex
 from ingestion import extract_text_from_pdf, adaptive_chunk_text
 
 DATA_DIR = Path(__file__).parent.parent / "data"
+CACHE_FILE = Path(__file__).parent.parent / "chroma_store" / "notebook_cache.json"
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -284,6 +285,180 @@ async def stream_endpoint(req: QueryRequest):
                     }
                 ),
             }
+
+        except Exception as exc:
+            yield {"event": "error", "data": json.dumps({"message": str(exc)})}
+
+    return EventSourceResponse(event_generator())
+
+
+# ---------------------------------------------------------------------------
+# Notebook cache helpers
+# ---------------------------------------------------------------------------
+
+def _load_cache() -> dict:
+    if CACHE_FILE.exists():
+        try:
+            return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"guide": None, "summaries": {}}
+
+
+def _save_cache(data: dict) -> None:
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Notebook endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/notebook")
+def get_notebook():
+    return _load_cache()
+
+
+class SummarizeRequest(BaseModel):
+    source: str
+
+
+@app.post("/notebook/generate")
+async def generate_notebook():
+    """Stream an AI-generated guide (overview, themes, suggested questions)."""
+    if not _index or not _openai_client:
+        raise HTTPException(status_code=503, detail="Index not initialised")
+
+    async def event_generator():
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Sample up to 2 chunks per document
+            all_data = await loop.run_in_executor(
+                None, lambda: _index._collection.get(include=["documents", "metadatas"])
+            )
+            from collections import defaultdict
+            doc_chunks: dict = defaultdict(list)
+            for doc, meta in zip(all_data["documents"], all_data["metadatas"]):
+                src = meta.get("source", "unknown")
+                if len(doc_chunks[src]) < 2:
+                    doc_chunks[src].append(doc[:600])
+
+            doc_excerpts = "\n\n".join(
+                f"=== {src} ===\n" + "\n---\n".join(excerpts)
+                for src, excerpts in sorted(doc_chunks.items())
+            )
+
+            system_prompt = (
+                "You are an expert research assistant. Analyse the document excerpts and respond with "
+                "ONLY a valid JSON object — no markdown fences, no extra text — matching this schema:\n"
+                '{"overview":"2-3 sentence overview","themes":["theme1","theme2","theme3","theme4"],'
+                '"doc_onelines":{"filename":"one-line description"},'
+                '"suggested_questions":["Q1?","Q2?","Q3?","Q4?","Q5?","Q6?"]}'
+            )
+            user_prompt = f"Document excerpts:\n\n{doc_excerpts}"
+
+            full_text = ""
+            stream = _openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+                stream=True,
+            )
+            for delta in stream:
+                content = delta.choices[0].delta.content
+                if content:
+                    full_text += content
+                    yield {"event": "token", "data": json.dumps({"content": content})}
+                    await asyncio.sleep(0)
+
+            # Parse and cache
+            try:
+                parsed = json.loads(full_text)
+            except Exception:
+                # Attempt to extract JSON from the response if there's surrounding text
+                import re
+                m = re.search(r"\{.*\}", full_text, re.DOTALL)
+                parsed = json.loads(m.group()) if m else {}
+
+            from datetime import datetime
+            guide = {**parsed, "generated_at": datetime.utcnow().isoformat()}
+            cache = _load_cache()
+            cache["guide"] = guide
+            _save_cache(cache)
+
+            yield {"event": "done", "data": json.dumps({"guide": guide})}
+
+        except Exception as exc:
+            yield {"event": "error", "data": json.dumps({"message": str(exc)})}
+
+    return EventSourceResponse(event_generator())
+
+
+@app.post("/document/summarize")
+async def summarize_document(req: SummarizeRequest):
+    """Stream a summary + topic tags for a single document."""
+    if not _index or not _openai_client:
+        raise HTTPException(status_code=503, detail="Index not initialised")
+
+    async def event_generator():
+        try:
+            loop = asyncio.get_event_loop()
+
+            result = await loop.run_in_executor(
+                None,
+                lambda: _index._collection.get(
+                    where={"source": req.source},
+                    include=["documents"],
+                ),
+            )
+            docs = result.get("documents") or []
+            if not docs:
+                yield {"event": "error", "data": json.dumps({"message": f"No chunks found for {req.source}"})}
+                return
+
+            # Use first 6 chunks as representative content (cap at 3000 chars each)
+            content = "\n\n---\n\n".join(d[:500] for d in docs[:6])
+
+            system_prompt = (
+                "You are a document analyst. Respond with ONLY a valid JSON object — no markdown, no extra text:\n"
+                '{"summary":"2-3 sentence summary of the document","topics":["topic1","topic2","topic3","topic4","topic5"]}'
+            )
+
+            full_text = ""
+            stream = _openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Document: {req.source}\n\nExcerpts:\n{content}"},
+                ],
+                temperature=0.2,
+                stream=True,
+            )
+            for delta in stream:
+                content_tok = delta.choices[0].delta.content
+                if content_tok:
+                    full_text += content_tok
+                    yield {"event": "token", "data": json.dumps({"content": content_tok})}
+                    await asyncio.sleep(0)
+
+            try:
+                parsed = json.loads(full_text)
+            except Exception:
+                import re
+                m = re.search(r"\{.*\}", full_text, re.DOTALL)
+                parsed = json.loads(m.group()) if m else {"summary": full_text, "topics": []}
+
+            from datetime import datetime
+            entry = {**parsed, "generated_at": datetime.utcnow().isoformat()}
+            cache = _load_cache()
+            cache["summaries"][req.source] = entry
+            _save_cache(cache)
+
+            yield {"event": "done", "data": json.dumps({"source": req.source, "entry": entry})}
 
         except Exception as exc:
             yield {"event": "error", "data": json.dumps({"message": str(exc)})}
