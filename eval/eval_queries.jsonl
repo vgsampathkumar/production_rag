@@ -1,0 +1,12 @@
+{"query": "what is the net purchase price", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "853,575", "description": "Exact dollar amount — keyword precision test"}
+{"query": "what are the buyer obligations", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "buyer", "description": "Role-based obligation lookup"}
+{"query": "what is the earnest money deposit amount", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "deposit", "description": "Financial term — contract uses 'deposit' not 'earnest'"}
+{"query": "what are the closing conditions and requirements", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "closing", "description": "Contract closing clause"}
+{"query": "what happens if the buyer defaults on the contract", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "default", "description": "Default clause — semantic retrieval test"}
+{"query": "what are the seller warranties and representations", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "warrant", "description": "Warranty clause"}
+{"query": "who are the parties to the agreement", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "seller", "description": "Party identification — entity extraction"}
+{"query": "what are the inspection rights and procedures", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "inspect", "description": "Inspection clause"}
+{"query": "what is the lot number and subdivision name", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "lot", "description": "Property identification — keyword test"}
+{"query": "what are the contingencies in the purchase contract", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "contingency", "description": "Contingency clause — contract uses 'contingency' not 'contingent'"}
+{"query": "what is the construction completion date", "expected_source": "Williams_Grove_lot_3_-_Sales_contract.pdf", "expected_fragment": "complet", "description": "Construction timeline — BM25 stem match"}
+{"query": "what information is on the customer information sheet", "expected_source": "Williams_Grove_lot_3_-_Customer_Information_S.pdf", "expected_fragment": "homebuyer", "description": "Cross-document routing — customer info form"}
