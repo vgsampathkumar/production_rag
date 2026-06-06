@@ -1,3 +1,13 @@
+---
+title: Production RAG
+emoji: 🔍
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Production-Grade RAG with Hybrid Search & Re-ranking
 
 An enterprise-ready "Ask My Doc" pipeline for domain-specific documents (legal contracts, real estate agreements, financial papers). Combines lexical and semantic retrieval with neural re-ranking and a streaming React UI.

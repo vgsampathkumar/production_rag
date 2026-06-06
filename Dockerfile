@@ -27,9 +27,8 @@ COPY api/ api/
 COPY src/ src/
 COPY .env.example .env.example
 
-# Bake the pre-built ChromaDB index (5.5 MB) into the image
-# Documents are NOT included (personal PDFs); users upload via the UI
-COPY chroma_store/ chroma_store/
+# Start with an empty ChromaDB store; users upload PDFs via the UI
+RUN mkdir -p chroma_store
 
 # HuggingFace Spaces uses port 7860 by default
 EXPOSE 7860
