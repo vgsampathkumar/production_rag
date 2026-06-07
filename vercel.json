@@ -1,6 +1,7 @@
 {
-  "buildCommand": "cd ui && npm install && npm run build",
-  "outputDirectory": "ui/dist",
+  "rootDirectory": "ui",
+  "buildCommand": "npm install && npm run build",
+  "outputDirectory": "dist",
   "framework": null,
   "env": {
     "VITE_API_BASE": "https://vgsampathkumar-production-rag.hf.space"
