@@ -149,7 +149,11 @@ export default function UploadPanel({ onUploaded }) {
         headers: await authHeaders(),
         body: formData,
       })
-      if (!res.ok) throw new Error(`Server error ${res.status}`)
+      if (!res.ok) {
+        let msg = `Server error ${res.status}`
+        try { const e = await res.json(); if (e.detail) msg = `${res.status}: ${e.detail}` } catch {}
+        throw new Error(msg)
+      }
       const data = await res.json()
       setUploadResults(data.results || [])
       setTotalChunks(data.total_chunks || totalChunks)

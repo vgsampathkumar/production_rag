@@ -74,11 +74,14 @@ async def get_current_user(
     if not CLERK_JWKS_URL:
         return "local-dev-user"
     if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        print("[AUTH] FAIL: No Bearer token in request", flush=True)
+        raise HTTPException(status_code=401, detail="Not authenticated — please sign in")
     try:
-        return _verify_token(credentials.credentials)
+        user_id = _verify_token(credentials.credentials)
+        return user_id
     except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+        print(f"[AUTH] FAIL: Token verification error — {type(exc).__name__}: {exc}", flush=True)
+        raise HTTPException(status_code=401, detail=f"Token invalid: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +92,20 @@ async def get_current_user(
 async def lifespan(app: FastAPI):
     global _index, _openai_client
     print(f"Starting RAG API server (model: {CROSS_ENCODER_MODEL})...")
+
+    # Auth diagnostics on startup
+    if CLERK_JWKS_URL:
+        print(f"[AUTH] CLERK_JWKS_URL configured: {CLERK_JWKS_URL}", flush=True)
+        try:
+            import requests as _req
+            r = _req.get(CLERK_JWKS_URL, timeout=5)
+            keys = r.json().get("keys", [])
+            print(f"[AUTH] JWKS endpoint reachable — {len(keys)} signing key(s) loaded", flush=True)
+        except Exception as e:
+            print(f"[AUTH] WARNING: Cannot reach JWKS endpoint: {e}", flush=True)
+    else:
+        print("[AUTH] CLERK_JWKS_URL not set — dev bypass active (all requests = 'local-dev-user')", flush=True)
+
     _openai_client = OpenAI(api_key=OPENAI_API_KEY)
     _index = HybridSearchIndex(
         persist_directory=str(Path(__file__).parent.parent / "chroma_store"),
@@ -108,11 +125,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Production RAG API", version="1.0.0", lifespan=lifespan)
 
+_DEFAULT_ORIGINS = "http://localhost:5173,http://localhost:5174,https://production-rag-beta.vercel.app"
 _ALLOWED_ORIGINS = [
     o.strip()
-    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+    for o in os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
     if o.strip()
 ]
+print(f"[CORS] Allowed origins: {_ALLOWED_ORIGINS}", flush=True)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -156,6 +175,27 @@ def _build_context(top_chunks: list) -> str:
 def health():
     count = _index._collection.count() if _index else 0
     return {"status": "ok", "chunks_indexed": count}
+
+
+@app.get("/debug/auth")
+def debug_auth():
+    """No-auth diagnostics endpoint — shows JWKS config and connectivity."""
+    info: dict = {
+        "clerk_jwks_url_set": bool(CLERK_JWKS_URL),
+        "dev_bypass_active": not bool(CLERK_JWKS_URL),
+    }
+    if CLERK_JWKS_URL:
+        info["clerk_jwks_url"] = CLERK_JWKS_URL
+        try:
+            import requests as _req
+            r = _req.get(CLERK_JWKS_URL, timeout=5)
+            keys = r.json().get("keys", [])
+            info["jwks_reachable"] = True
+            info["keys_count"] = len(keys)
+        except Exception as e:
+            info["jwks_reachable"] = False
+            info["jwks_error"] = str(e)
+    return info
 
 
 @app.get("/documents")
