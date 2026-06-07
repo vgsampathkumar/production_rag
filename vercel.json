@@ -3,6 +3,6 @@
   "outputDirectory": "ui/dist",
   "framework": null,
   "env": {
-    "VITE_API_BASE": "https://vgsampathkumar-production-rag.hf.space"
+    "VITE_API_BASE": "https://vgsampathkumar-production-rag-d1a67e9.hf.space"
   }
 }
