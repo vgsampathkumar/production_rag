@@ -62,12 +62,14 @@ function DocumentRow({ doc, index, onDelete }) {
 function UploadResultBadge({ result }) {
   const styles = {
     ok:      'bg-emerald-500/15 border-emerald-500/30 text-emerald-400',
+    queued:  'bg-accent/10 border-accent/25 text-accent/80',
     warning: 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400',
     error:   'bg-red-500/15 border-red-500/30 text-red-400',
     skipped: 'bg-white/5 border-white/10 text-muted',
   }
   const icons = {
     ok:      <path d="M20 6 9 17l-5-5" />,
+    queued:  <path d="M21 12a9 9 0 1 1-6.219-8.56" />,
     warning: <><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>,
     error:   <><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></>,
     skipped: <><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></>,
@@ -155,12 +157,23 @@ export default function UploadPanel({ onUploaded }) {
         throw new Error(msg)
       }
       const data = await res.json()
-      setUploadResults(data.results || [])
+      const results = data.results || []
+      setUploadResults(results)
       setTotalChunks(data.total_chunks || totalChunks)
       setPendingFiles([])
       setUploadStatus('done')
       fetchDocuments()
       onUploaded?.()
+
+      // If any files are queued for background indexing, poll until they appear
+      if (results.some(r => r.status === 'queued')) {
+        let attempts = 0
+        const poll = setInterval(async () => {
+          attempts++
+          await fetchDocuments()
+          if (attempts >= 12) clearInterval(poll)  // stop after 2 min
+        }, 10000)  // every 10 s
+      }
     } catch (err) {
       setUploadResults([{ name: 'Upload failed', status: 'error', message: err.message }])
       setUploadStatus('error')

@@ -10,7 +10,7 @@ from typing import Optional
 import jwt as pyjwt
 from jwt import PyJWKClient
 from collections import Counter
-from fastapi import FastAPI, HTTPException, File, UploadFile, Depends
+from fastapi import BackgroundTasks, FastAPI, HTTPException, File, UploadFile, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -214,17 +214,45 @@ def list_documents(user_id: str = Depends(get_current_user)):
     }
 
 
+def _index_file_background(save_path: Path, user_id: str) -> None:
+    """Runs OCR + chunking + ChromaDB insert in a background thread."""
+    print(f"[BG] Starting indexing: {save_path.name}", flush=True)
+    try:
+        pages = extract_text_from_pdf(save_path)
+        if not pages:
+            print(f"[BG] {save_path.name}: no text found", flush=True)
+            return
+        chunks = adaptive_chunk_text(pages)
+        _index._collection.upsert(
+            ids=[c["chunk_id"] for c in chunks],
+            documents=[c["text"] for c in chunks],
+            metadatas=[
+                {
+                    "source": c["source"],
+                    "token_count": c["token_count"],
+                    "page_num": c["page_num"],
+                    "user_id": user_id,
+                }
+                for c in chunks
+            ],
+        )
+        _index.build_bm25_from_collection()
+        print(f"[BG] Done: {save_path.name} — {len(chunks)} chunks from {len(pages)} pages", flush=True)
+    except Exception as exc:
+        print(f"[BG] Error indexing {save_path.name}: {exc}", flush=True)
+
+
 @app.post("/upload")
 async def upload_documents(
     files: list[UploadFile] = File(...),
     user_id: str = Depends(get_current_user),
+    background_tasks: BackgroundTasks = ...,
 ):
     if not _index:
         raise HTTPException(status_code=503, detail="Index not initialised")
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     results = []
-    any_ingested = False
 
     for file in files:
         name = file.filename or "unknown.pdf"
@@ -236,37 +264,13 @@ async def upload_documents(
         content = await file.read()
         save_path.write_bytes(content)
 
-        try:
-            pages = extract_text_from_pdf(save_path)
-            if not pages:
-                results.append({
-                    "name": name, "status": "warning",
-                    "message": "No text extracted — scanned PDF. Ensure Tesseract is installed.",
-                })
-                continue
-
-            chunks = adaptive_chunk_text(pages)
-
-            _index._collection.upsert(
-                ids=[c["chunk_id"] for c in chunks],
-                documents=[c["text"] for c in chunks],
-                metadatas=[
-                    {
-                        "source": c["source"],
-                        "token_count": c["token_count"],
-                        "page_num": c["page_num"],
-                        "user_id": user_id,
-                    }
-                    for c in chunks
-                ],
-            )
-            results.append({"name": name, "status": "ok", "chunks": len(chunks), "pages": len(pages)})
-            any_ingested = True
-        except Exception as exc:
-            results.append({"name": name, "status": "error", "message": str(exc)})
-
-    if any_ingested:
-        _index.build_bm25_from_collection()
+        # Return immediately — OCR/indexing runs in background to avoid proxy timeout
+        background_tasks.add_task(_index_file_background, save_path, user_id)
+        results.append({
+            "name": name, "status": "queued",
+            "message": "Saved — indexing in background (may take 1-2 min for large PDFs)",
+            "chunks": 0, "pages": 0,
+        })
 
     return {
         "results": results,
