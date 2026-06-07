@@ -7,8 +7,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import jwt as pyjwt
+from jwt import PyJWKClient
 from collections import Counter
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import FastAPI, HTTPException, File, UploadFile, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -29,10 +32,58 @@ CROSS_ENCODER_MODEL = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-T
 DENSE_K = int(os.getenv("DENSE_K", "10"))
 SPARSE_K = int(os.getenv("SPARSE_K", "10"))
 RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "5"))
+CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
 
 _index: Optional[HybridSearchIndex] = None
 _openai_client: Optional[OpenAI] = None
+_jwks_client: Optional[PyJWKClient] = None
 
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+_security = HTTPBearer(auto_error=False)
+
+
+def _get_jwks_client() -> PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        _jwks_client = PyJWKClient(CLERK_JWKS_URL, cache_keys=True)
+    return _jwks_client
+
+
+def _verify_token(token: str) -> str:
+    client = _get_jwks_client()
+    signing_key = client.get_signing_key_from_jwt(token)
+    payload = pyjwt.decode(
+        token,
+        signing_key.key,
+        algorithms=["RS256"],
+        options={"verify_aud": False},
+    )
+    user_id = payload.get("sub", "")
+    if not user_id:
+        raise ValueError("Token missing sub claim")
+    return user_id
+
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
+) -> str:
+    if not CLERK_JWKS_URL:
+        return "local-dev-user"
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        return _verify_token(credentials.credentials)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# App lifecycle
+# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -50,7 +101,7 @@ async def lifespan(app: FastAPI):
         _index.build_bm25_from_collection()
         print(f"Warm start complete: {count} chunks ready.")
     else:
-        print("WARNING: No documents indexed. Run `python src/main.py` first to ingest PDFs.")
+        print("WARNING: No documents indexed. Upload PDFs via the UI.")
     yield
     print("Shutting down.")
 
@@ -71,12 +122,24 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
+
 class QueryRequest(BaseModel):
     query: str
     dense_k: int = DENSE_K
     sparse_k: int = SPARSE_K
     enable_llm: bool = True
 
+
+class SummarizeRequest(BaseModel):
+    source: str
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _build_context(top_chunks: list) -> str:
     return "\n\n".join(
@@ -85,6 +148,10 @@ def _build_context(top_chunks: list) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Core endpoints
+# ---------------------------------------------------------------------------
+
 @app.get("/health")
 def health():
     count = _index._collection.count() if _index else 0
@@ -92,10 +159,13 @@ def health():
 
 
 @app.get("/documents")
-def list_documents():
+def list_documents(user_id: str = Depends(get_current_user)):
     if not _index:
         return {"documents": [], "total_chunks": 0}
-    result = _index._collection.get(include=["metadatas"])
+    result = _index._collection.get(
+        where={"user_id": user_id},
+        include=["metadatas"],
+    )
     counts = Counter(m["source"] for m in result["metadatas"])
     return {
         "documents": [{"name": k, "chunks": v} for k, v in sorted(counts.items())],
@@ -104,7 +174,10 @@ def list_documents():
 
 
 @app.post("/upload")
-async def upload_documents(files: list[UploadFile] = File(...)):
+async def upload_documents(
+    files: list[UploadFile] = File(...),
+    user_id: str = Depends(get_current_user),
+):
     if not _index:
         raise HTTPException(status_code=503, detail="Index not initialised")
 
@@ -133,12 +206,16 @@ async def upload_documents(files: list[UploadFile] = File(...)):
 
             chunks = adaptive_chunk_text(pages)
 
-            # Upsert only this file's chunks directly to ChromaDB (avoids BM25 clobber)
             _index._collection.upsert(
                 ids=[c["chunk_id"] for c in chunks],
                 documents=[c["text"] for c in chunks],
                 metadatas=[
-                    {"source": c["source"], "token_count": c["token_count"], "page_num": c["page_num"]}
+                    {
+                        "source": c["source"],
+                        "token_count": c["token_count"],
+                        "page_num": c["page_num"],
+                        "user_id": user_id,
+                    }
                     for c in chunks
                 ],
             )
@@ -147,7 +224,6 @@ async def upload_documents(files: list[UploadFile] = File(...)):
         except Exception as exc:
             results.append({"name": name, "status": "error", "message": str(exc)})
 
-    # Rebuild BM25 from the full updated collection
     if any_ingested:
         _index.build_bm25_from_collection()
 
@@ -157,13 +233,30 @@ async def upload_documents(files: list[UploadFile] = File(...)):
     }
 
 
+@app.delete("/document/{name:path}")
+def delete_document(name: str, user_id: str = Depends(get_current_user)):
+    if not _index:
+        raise HTTPException(status_code=503, detail="Index not initialised")
+
+    _index._collection.delete(
+        where={"$and": [{"source": {"$eq": name}}, {"user_id": {"$eq": user_id}}]}
+    )
+    _index.build_bm25_from_collection()
+
+    cache = _load_cache(user_id)
+    cache["summaries"].pop(name, None)
+    _save_cache(user_id, cache)
+
+    return {"status": "ok", "deleted": name}
+
+
 @app.post("/query")
-def query_endpoint(req: QueryRequest):
+def query_endpoint(req: QueryRequest, user_id: str = Depends(get_current_user)):
     if not _index:
         raise HTTPException(status_code=503, detail="Index not initialised")
 
     t0 = time.perf_counter()
-    candidates = _index.hybrid_search(req.query, dense_k=req.dense_k, sparse_k=req.sparse_k)
+    candidates = _index.hybrid_search(req.query, dense_k=req.dense_k, sparse_k=req.sparse_k, user_id=user_id)
     search_ms = (time.perf_counter() - t0) * 1000
 
     t1 = time.perf_counter()
@@ -209,7 +302,7 @@ def query_endpoint(req: QueryRequest):
 
 
 @app.post("/stream")
-async def stream_endpoint(req: QueryRequest):
+async def stream_endpoint(req: QueryRequest, user_id: str = Depends(get_current_user)):
     if not _index:
         raise HTTPException(status_code=503, detail="Index not initialised")
 
@@ -220,7 +313,7 @@ async def stream_endpoint(req: QueryRequest):
         try:
             candidates = await loop.run_in_executor(
                 None,
-                lambda: _index.hybrid_search(req.query, dense_k=req.dense_k, sparse_k=req.sparse_k),
+                lambda: _index.hybrid_search(req.query, dense_k=req.dense_k, sparse_k=req.sparse_k, user_id=user_id),
             )
             search_ms = (time.perf_counter() - t0) * 1000
 
@@ -233,19 +326,17 @@ async def stream_endpoint(req: QueryRequest):
             for i, chunk in enumerate(top_chunks):
                 yield {
                     "event": "chunk",
-                    "data": json.dumps(
-                        {
-                            "rank": i + 1,
-                            "chunk_id": chunk["chunk_id"],
-                            "text": chunk["text"],
-                            "source": chunk["source"],
-                            "page_num": chunk["page_num"],
-                            "token_count": chunk.get("token_count", 0),
-                            "score": round(chunk.get("score", 0), 4),
-                            "retrieval_type": chunk.get("retrieval_type", "dense"),
-                            "rerank_score": round(chunk.get("rerank_score", 0), 4),
-                        }
-                    ),
+                    "data": json.dumps({
+                        "rank": i + 1,
+                        "chunk_id": chunk["chunk_id"],
+                        "text": chunk["text"],
+                        "source": chunk["source"],
+                        "page_num": chunk["page_num"],
+                        "token_count": chunk.get("token_count", 0),
+                        "score": round(chunk.get("score", 0), 4),
+                        "retrieval_type": chunk.get("retrieval_type", "dense"),
+                        "rerank_score": round(chunk.get("rerank_score", 0), 4),
+                    }),
                 }
 
             llm_ms = 0.0
@@ -279,16 +370,14 @@ async def stream_endpoint(req: QueryRequest):
             total_ms = (time.perf_counter() - t0) * 1000
             yield {
                 "event": "done",
-                "data": json.dumps(
-                    {
-                        "metrics": {
-                            "search_ms": round(search_ms, 1),
-                            "rerank_ms": round(rerank_ms, 1),
-                            "llm_ms": round(llm_ms, 1),
-                            "total_ms": round(total_ms, 1),
-                        }
+                "data": json.dumps({
+                    "metrics": {
+                        "search_ms": round(search_ms, 1),
+                        "rerank_ms": round(rerank_ms, 1),
+                        "llm_ms": round(llm_ms, 1),
+                        "total_ms": round(total_ms, 1),
                     }
-                ),
+                }),
             }
 
         except Exception as exc:
@@ -298,21 +387,29 @@ async def stream_endpoint(req: QueryRequest):
 
 
 # ---------------------------------------------------------------------------
-# Notebook cache helpers
+# Per-user notebook cache
 # ---------------------------------------------------------------------------
 
-def _load_cache() -> dict:
+def _load_cache(user_id: str) -> dict:
     if CACHE_FILE.exists():
         try:
-            return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            return data.get(user_id, {"guide": None, "summaries": {}})
         except Exception:
             pass
     return {"guide": None, "summaries": {}}
 
 
-def _save_cache(data: dict) -> None:
+def _save_cache(user_id: str, user_data: dict) -> None:
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    all_data: dict = {}
+    if CACHE_FILE.exists():
+        try:
+            all_data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    all_data[user_id] = user_data
+    CACHE_FILE.write_text(json.dumps(all_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -320,17 +417,12 @@ def _save_cache(data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 @app.get("/notebook")
-def get_notebook():
-    return _load_cache()
-
-
-class SummarizeRequest(BaseModel):
-    source: str
+def get_notebook(user_id: str = Depends(get_current_user)):
+    return _load_cache(user_id)
 
 
 @app.post("/notebook/generate")
-async def generate_notebook():
-    """Stream an AI-generated guide (overview, themes, suggested questions)."""
+async def generate_notebook(user_id: str = Depends(get_current_user)):
     if not _index or not _openai_client:
         raise HTTPException(status_code=503, detail="Index not initialised")
 
@@ -338,9 +430,12 @@ async def generate_notebook():
         try:
             loop = asyncio.get_event_loop()
 
-            # Sample up to 2 chunks per document
             all_data = await loop.run_in_executor(
-                None, lambda: _index._collection.get(include=["documents", "metadatas"])
+                None,
+                lambda: _index._collection.get(
+                    where={"user_id": user_id},
+                    include=["documents", "metadatas"],
+                ),
             )
             from collections import defaultdict
             doc_chunks: dict = defaultdict(list)
@@ -348,6 +443,10 @@ async def generate_notebook():
                 src = meta.get("source", "unknown")
                 if len(doc_chunks[src]) < 2:
                     doc_chunks[src].append(doc[:600])
+
+            if not doc_chunks:
+                yield {"event": "error", "data": json.dumps({"message": "No documents indexed. Upload PDFs first."})}
+                return
 
             doc_excerpts = "\n\n".join(
                 f"=== {src} ===\n" + "\n---\n".join(excerpts)
@@ -361,14 +460,13 @@ async def generate_notebook():
                 '"doc_onelines":{"filename":"one-line description"},'
                 '"suggested_questions":["Q1?","Q2?","Q3?","Q4?","Q5?","Q6?"]}'
             )
-            user_prompt = f"Document excerpts:\n\n{doc_excerpts}"
 
             full_text = ""
             stream = _openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
+                    {"role": "user", "content": f"Document excerpts:\n\n{doc_excerpts}"},
                 ],
                 temperature=0.3,
                 stream=True,
@@ -380,20 +478,18 @@ async def generate_notebook():
                     yield {"event": "token", "data": json.dumps({"content": content})}
                     await asyncio.sleep(0)
 
-            # Parse and cache
             try:
                 parsed = json.loads(full_text)
             except Exception:
-                # Attempt to extract JSON from the response if there's surrounding text
                 import re
                 m = re.search(r"\{.*\}", full_text, re.DOTALL)
                 parsed = json.loads(m.group()) if m else {}
 
             from datetime import datetime
             guide = {**parsed, "generated_at": datetime.utcnow().isoformat()}
-            cache = _load_cache()
+            cache = _load_cache(user_id)
             cache["guide"] = guide
-            _save_cache(cache)
+            _save_cache(user_id, cache)
 
             yield {"event": "done", "data": json.dumps({"guide": guide})}
 
@@ -404,8 +500,7 @@ async def generate_notebook():
 
 
 @app.post("/document/summarize")
-async def summarize_document(req: SummarizeRequest):
-    """Stream a summary + topic tags for a single document."""
+async def summarize_document(req: SummarizeRequest, user_id: str = Depends(get_current_user)):
     if not _index or not _openai_client:
         raise HTTPException(status_code=503, detail="Index not initialised")
 
@@ -416,7 +511,7 @@ async def summarize_document(req: SummarizeRequest):
             result = await loop.run_in_executor(
                 None,
                 lambda: _index._collection.get(
-                    where={"source": req.source},
+                    where={"$and": [{"source": {"$eq": req.source}}, {"user_id": {"$eq": user_id}}]},
                     include=["documents"],
                 ),
             )
@@ -425,7 +520,6 @@ async def summarize_document(req: SummarizeRequest):
                 yield {"event": "error", "data": json.dumps({"message": f"No chunks found for {req.source}"})}
                 return
 
-            # Use first 6 chunks as representative content (cap at 3000 chars each)
             content = "\n\n---\n\n".join(d[:500] for d in docs[:6])
 
             system_prompt = (
@@ -459,9 +553,9 @@ async def summarize_document(req: SummarizeRequest):
 
             from datetime import datetime
             entry = {**parsed, "generated_at": datetime.utcnow().isoformat()}
-            cache = _load_cache()
+            cache = _load_cache(user_id)
             cache["summaries"][req.source] = entry
-            _save_cache(cache)
+            _save_cache(user_id, cache)
 
             yield {"event": "done", "data": json.dumps({"source": req.source, "entry": entry})}
 

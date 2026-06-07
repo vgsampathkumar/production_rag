@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
+import { useAuth } from '@clerk/clerk-react'
 import NotebookGuide from './NotebookGuide.jsx'
 import SuggestedQuestions from './SuggestedQuestions.jsx'
 import DocumentSummaryCard from './DocumentSummaryCard.jsx'
 import { API_BASE } from '../config.js'
 
 export default function NotebookTab({ onAsk }) {
+  const { getToken } = useAuth()
   const [notebookData, setNotebookData] = useState({ guide: null, summaries: {} })
   const [documents, setDocuments] = useState([])
   const [loading, setLoading] = useState(true)
@@ -13,9 +15,11 @@ export default function NotebookTab({ onAsk }) {
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
+      const token = await getToken()
+      const headers = token ? { Authorization: `Bearer ${token}` } : {}
       const [nbRes, docsRes] = await Promise.all([
-        fetch(`${API_BASE}/notebook`),
-        fetch(`${API_BASE}/documents`),
+        fetch(`${API_BASE}/notebook`, { headers }),
+        fetch(`${API_BASE}/documents`, { headers }),
       ])
       const nb = await nbRes.json()
       const docs = await docsRes.json()
@@ -26,26 +30,15 @@ export default function NotebookTab({ onAsk }) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [getToken])
 
   useEffect(() => {
     fetchData()
   }, [fetchData])
 
-  const handleGuideReady = (guide) => {
-    setNotebookData(prev => ({ ...prev, guide }))
-  }
-
-  const handleSummaryReady = (source, entry) => {
-    setNotebookData(prev => ({
-      ...prev,
-      summaries: { ...prev.summaries, [source]: entry },
-    }))
-  }
-
-  const handleAsk = (question) => {
-    onAsk(question)
-  }
+  const handleGuideReady = (guide) => setNotebookData(prev => ({ ...prev, guide }))
+  const handleSummaryReady = (source, entry) =>
+    setNotebookData(prev => ({ ...prev, summaries: { ...prev.summaries, [source]: entry } }))
 
   if (loading) {
     return (
@@ -68,21 +61,12 @@ export default function NotebookTab({ onAsk }) {
       transition={{ duration: 0.35 }}
       className="flex flex-col gap-6"
     >
-      {/* Notebook Guide */}
-      <NotebookGuide
-        initialGuide={notebookData.guide}
-        onGuideReady={handleGuideReady}
-      />
+      <NotebookGuide initialGuide={notebookData.guide} onGuideReady={handleGuideReady} />
 
-      {/* Suggested Questions */}
       {notebookData.guide?.suggested_questions?.length > 0 && (
-        <SuggestedQuestions
-          questions={notebookData.guide.suggested_questions}
-          onAsk={handleAsk}
-        />
+        <SuggestedQuestions questions={notebookData.guide.suggested_questions} onAsk={onAsk} />
       )}
 
-      {/* Document Library with summaries */}
       {documents.length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-3">
@@ -90,14 +74,9 @@ export default function NotebookTab({ onAsk }) {
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
             </svg>
-            <h3 className="text-xs font-semibold text-body/70 uppercase tracking-wider">
-              Document Library
-            </h3>
-            <span className="text-xs text-muted bg-surface px-2 py-0.5 rounded-full border border-white/5">
-              {documents.length}
-            </span>
+            <h3 className="text-xs font-semibold text-body/70 uppercase tracking-wider">Document Library</h3>
+            <span className="text-xs text-muted bg-surface px-2 py-0.5 rounded-full border border-white/5">{documents.length}</span>
           </div>
-
           <div className="flex flex-col gap-2">
             {documents.map(doc => (
               <DocumentSummaryCard

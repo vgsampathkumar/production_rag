@@ -60,6 +60,7 @@ class HybridSearchIndex:
                                 "source": c["source"],
                                 "token_count": c["token_count"],
                                 "page_num": c["page_num"],
+                                "user_id": c.get("user_id", ""),
                             }
                             for c in batch
                         ],
@@ -101,21 +102,28 @@ class HybridSearchIndex:
                 "source": metas[i].get("source", ""),
                 "token_count": metas[i].get("token_count", 0),
                 "page_num": metas[i].get("page_num", 0),
+                "user_id": metas[i].get("user_id", ""),
             }
             for i in range(len(ids))
         ]
 
         tokenized = [self._tokenize_for_bm25(c["text"]) for c in chunks]
         with self._bm25_lock:
-            self._bm25 = BM25Okapi(tokenized)
+            self._bm25 = BM25Okapi(tokenized) if tokenized else None
             self._bm25_chunks = chunks
         print(f"BM25 ready: {len(chunks)} documents indexed.")
 
-    def dense_search(self, query: str, top_k: int = 20) -> List[Dict]:
+    def dense_search(self, query: str, top_k: int = 20, user_id: Optional[str] = None) -> List[Dict]:
+        total = self._collection.count()
+        if total == 0:
+            return []
+
+        where = {"user_id": user_id} if user_id else None
         results = self._collection.query(
             query_texts=[query],
-            n_results=min(top_k, self._collection.count()),
+            n_results=min(top_k, total),
             include=["documents", "metadatas", "distances"],
+            where=where,
         )
         output = []
         for chunk_id, doc, meta, dist in zip(
@@ -135,12 +143,19 @@ class HybridSearchIndex:
             })
         return output
 
-    def sparse_search(self, query: str, top_k: int = 20) -> List[Dict]:
+    def sparse_search(self, query: str, top_k: int = 20, user_id: Optional[str] = None) -> List[Dict]:
         with self._bm25_lock:
-            if self._bm25 is None:
-                raise RuntimeError("BM25 index not built. Call add_documents or build_bm25_from_collection first.")
-            bm25 = self._bm25
-            bm25_chunks = self._bm25_chunks
+            # Filter chunks to this user, then build a fresh BM25 for that subset
+            if user_id:
+                chunks = [c for c in self._bm25_chunks if c.get("user_id") == user_id]
+            else:
+                chunks = list(self._bm25_chunks)
+
+        if not chunks:
+            return []
+
+        tokenized = [self._tokenize_for_bm25(c["text"]) for c in chunks]
+        bm25 = BM25Okapi(tokenized)
 
         query_tokens = self._tokenize_for_bm25(query)
         scores = bm25.get_scores(query_tokens)
@@ -153,7 +168,7 @@ class HybridSearchIndex:
 
         output = []
         for idx in top_indices:
-            chunk = bm25_chunks[idx]
+            chunk = chunks[idx]
             output.append({
                 "chunk_id": chunk["chunk_id"],
                 "text": chunk["text"],
@@ -165,20 +180,20 @@ class HybridSearchIndex:
             })
         return output
 
-    def hybrid_search(self, query: str, dense_k: int = 20, sparse_k: int = 20) -> List[Dict]:
+    def hybrid_search(self, query: str, dense_k: int = 20, sparse_k: int = 20, user_id: Optional[str] = None) -> List[Dict]:
         dense_results: List[Dict] = []
         sparse_results: List[Dict] = []
         errors: List[Exception] = []
 
         def run_dense():
             try:
-                dense_results.extend(self.dense_search(query, dense_k))
+                dense_results.extend(self.dense_search(query, dense_k, user_id=user_id))
             except Exception as exc:
                 errors.append(exc)
 
         def run_sparse():
             try:
-                sparse_results.extend(self.sparse_search(query, sparse_k))
+                sparse_results.extend(self.sparse_search(query, sparse_k, user_id=user_id))
             except Exception as exc:
                 errors.append(exc)
 

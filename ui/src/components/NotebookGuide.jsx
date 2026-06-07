@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useAuth } from '@clerk/clerk-react'
 import { API_BASE } from '../config.js'
 
 async function* parseSseStream(response) {
@@ -25,9 +26,10 @@ async function* parseSseStream(response) {
 }
 
 export default function NotebookGuide({ initialGuide, onGuideReady }) {
+  const { getToken } = useAuth()
   const [guide, setGuide] = useState(initialGuide || null)
-  const [streaming, setStreaming] = useState('')   // raw text while generating
-  const [status, setStatus] = useState('idle')     // idle | generating | done | error
+  const [streaming, setStreaming] = useState('')
+  const [status, setStatus] = useState('idle')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -40,7 +42,11 @@ export default function NotebookGuide({ initialGuide, onGuideReady }) {
     setError('')
 
     try {
-      const res = await fetch(`${API_BASE}/notebook/generate`, { method: 'POST' })
+      const token = await getToken()
+      const res = await fetch(`${API_BASE}/notebook/generate`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
       if (!res.ok) throw new Error(`Server error ${res.status}`)
 
       for await (const event of parseSseStream(res)) {
@@ -62,21 +68,14 @@ export default function NotebookGuide({ initialGuide, onGuideReady }) {
 
   return (
     <div className="bg-surface rounded-2xl border border-white/5 overflow-hidden">
-      {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
         <div className="flex items-center gap-2">
           <div className="w-1 h-5 bg-indigo-400 rounded-full" />
-          <h2 className="text-sm font-semibold text-body/90 uppercase tracking-wider">
-            Notebook Guide
-          </h2>
+          <h2 className="text-sm font-semibold text-body/90 uppercase tracking-wider">Notebook Guide</h2>
         </div>
         <div className="flex items-center gap-2">
           {isGenerating && (
-            <motion.span
-              className="text-xs text-accent"
-              animate={{ opacity: [0.5, 1, 0.5] }}
-              transition={{ duration: 1.2, repeat: Infinity }}
-            >
+            <motion.span className="text-xs text-accent" animate={{ opacity: [0.5, 1, 0.5] }} transition={{ duration: 1.2, repeat: Infinity }}>
               Generating…
             </motion.span>
           )}
@@ -102,9 +101,7 @@ export default function NotebookGuide({ initialGuide, onGuideReady }) {
         </div>
       </div>
 
-      {/* Body */}
       <div className="px-5 py-4">
-        {/* No guide yet */}
         {!guide && !streaming && !isGenerating && (
           <div className="text-center py-8 text-muted">
             <svg className="mx-auto mb-3 opacity-40" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
@@ -114,50 +111,34 @@ export default function NotebookGuide({ initialGuide, onGuideReady }) {
           </div>
         )}
 
-        {/* Streaming raw text */}
         {isGenerating && streaming && (
           <p className="text-xs text-muted font-mono leading-relaxed whitespace-pre-wrap">
             {streaming}<span className="cursor-blink" />
           </p>
         )}
 
-        {/* Parsed guide */}
         <AnimatePresence>
           {guide && !isGenerating && (
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex flex-col gap-5"
-            >
-              {/* Overview */}
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col gap-5">
               {guide.overview && (
                 <div>
                   <p className="text-xs text-muted uppercase tracking-wider mb-2">Overview</p>
                   <p className="text-sm text-body/85 leading-relaxed">{guide.overview}</p>
                 </div>
               )}
-
-              {/* Themes */}
               {guide.themes?.length > 0 && (
                 <div>
                   <p className="text-xs text-muted uppercase tracking-wider mb-2">Key Themes</p>
                   <div className="flex flex-wrap gap-2">
                     {guide.themes.map((t, i) => (
-                      <motion.span
-                        key={i}
-                        initial={{ opacity: 0, scale: 0.85 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ delay: i * 0.06 }}
-                        className="text-xs px-3 py-1 rounded-full bg-accent/10 border border-accent/25 text-accent/90"
-                      >
+                      <motion.span key={i} initial={{ opacity: 0, scale: 0.85 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.06 }}
+                        className="text-xs px-3 py-1 rounded-full bg-accent/10 border border-accent/25 text-accent/90">
                         {t}
                       </motion.span>
                     ))}
                   </div>
                 </div>
               )}
-
-              {/* Per-doc one-liners */}
               {guide.doc_onelines && Object.keys(guide.doc_onelines).length > 0 && (
                 <div>
                   <p className="text-xs text-muted uppercase tracking-wider mb-2">Documents</p>
@@ -180,9 +161,7 @@ export default function NotebookGuide({ initialGuide, onGuideReady }) {
           )}
         </AnimatePresence>
 
-        {error && (
-          <p className="text-xs text-red-400 mt-2">{error}</p>
-        )}
+        {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
       </div>
     </div>
   )

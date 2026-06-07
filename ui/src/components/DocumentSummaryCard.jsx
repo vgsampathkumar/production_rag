@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useAuth } from '@clerk/clerk-react'
 import { API_BASE } from '../config.js'
 
 async function* parseSseStream(response) {
@@ -25,6 +26,7 @@ async function* parseSseStream(response) {
 }
 
 export default function DocumentSummaryCard({ doc, cachedSummary, onSummaryReady }) {
+  const { getToken } = useAuth()
   const [isOpen, setIsOpen] = useState(false)
   const [summary, setSummary] = useState(cachedSummary || null)
   const [streaming, setStreaming] = useState('')
@@ -39,9 +41,13 @@ export default function DocumentSummaryCard({ doc, cachedSummary, onSummaryReady
     setIsOpen(true)
 
     try {
+      const token = await getToken()
       const res = await fetch(`${API_BASE}/document/summarize`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ source: doc.name }),
       })
       if (!res.ok) throw new Error(`Server error ${res.status}`)
@@ -65,15 +71,8 @@ export default function DocumentSummaryCard({ doc, cachedSummary, onSummaryReady
   const hasSummary = !!summary
 
   return (
-    <motion.div
-      layout
-      className="bg-surface rounded-xl border border-white/5 overflow-hidden"
-    >
-      {/* Header row — always visible */}
-      <div
-        className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/3 transition-colors"
-        onClick={() => setIsOpen(v => !v)}
-      >
+    <motion.div layout className="bg-surface rounded-xl border border-white/5 overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/3 transition-colors" onClick={() => setIsOpen(v => !v)}>
         <svg className="flex-shrink-0 text-accent/50" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
           <polyline points="14 2 14 8 20 8" />
@@ -87,7 +86,6 @@ export default function DocumentSummaryCard({ doc, cachedSummary, onSummaryReady
           </p>
         </div>
 
-        {/* Summarize / Regenerate button */}
         <motion.button
           onClick={summarize}
           disabled={isGenerating}
@@ -108,7 +106,6 @@ export default function DocumentSummaryCard({ doc, cachedSummary, onSummaryReady
           {hasSummary ? 'Re-summarize' : 'Summarize'}
         </motion.button>
 
-        {/* Chevron */}
         <motion.svg
           animate={{ rotate: isOpen ? 180 : 0 }}
           transition={{ duration: 0.2 }}
@@ -119,7 +116,6 @@ export default function DocumentSummaryCard({ doc, cachedSummary, onSummaryReady
         </motion.svg>
       </div>
 
-      {/* Expanded body */}
       <AnimatePresence>
         {isOpen && (
           <motion.div
@@ -130,43 +126,26 @@ export default function DocumentSummaryCard({ doc, cachedSummary, onSummaryReady
             className="overflow-hidden"
           >
             <div className="px-4 pb-4 pt-1 border-t border-white/5">
-              {/* Streaming */}
               {isGenerating && streaming && (
                 <p className="text-xs text-muted font-mono leading-relaxed whitespace-pre-wrap">
                   {streaming}<span className="cursor-blink" />
                 </p>
               )}
-
-              {/* Idle prompt */}
               {!hasSummary && !isGenerating && !streaming && (
-                <p className="text-xs text-muted py-2">
-                  Click <strong>Summarize</strong> to generate an AI summary for this document.
-                </p>
+                <p className="text-xs text-muted py-2">Click <strong>Summarize</strong> to generate an AI summary for this document.</p>
               )}
-
-              {/* Parsed summary */}
               {hasSummary && !isGenerating && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="flex flex-col gap-3"
-                >
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col gap-3">
                   <p className="text-sm text-body/80 leading-relaxed">{summary.summary}</p>
                   {summary.topics?.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {summary.topics.map((t, i) => (
-                        <span
-                          key={i}
-                          className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400/90"
-                        >
-                          {t}
-                        </span>
+                        <span key={i} className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400/90">{t}</span>
                       ))}
                     </div>
                   )}
                 </motion.div>
               )}
-
               {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
             </div>
           </motion.div>
