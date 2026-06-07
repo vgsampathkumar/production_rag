@@ -61,6 +61,7 @@ def _verify_token(token: str) -> str:
         signing_key.key,
         algorithms=["RS256"],
         options={"verify_aud": False},
+        leeway=120,  # 2 min leeway — Clerk dev tokens expire in 60s
     )
     user_id = payload.get("sub", "")
     if not user_id:
