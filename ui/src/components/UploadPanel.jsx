@@ -37,7 +37,7 @@ function DocumentRow({ doc, index, onDelete }) {
           disabled={deleting}
           whileHover={{ scale: 1.1 }}
           whileTap={{ scale: 0.9 }}
-          className="opacity-0 group-hover:opacity-100 transition-opacity text-muted hover:text-red-400 disabled:opacity-30"
+          className="opacity-40 hover:opacity-100 transition-opacity text-muted hover:text-red-400 disabled:opacity-20"
           title="Delete document"
         >
           {deleting ? (

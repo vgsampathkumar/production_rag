@@ -238,16 +238,22 @@ def delete_document(name: str, user_id: str = Depends(get_current_user)):
     if not _index:
         raise HTTPException(status_code=503, detail="Index not initialised")
 
-    _index._collection.delete(
-        where={"$and": [{"source": {"$eq": name}}, {"user_id": {"$eq": user_id}}]}
+    # Fetch IDs first — avoids ChromaDB $and bugs in collection.delete()
+    result = _index._collection.get(
+        where={"$and": [{"source": {"$eq": name}}, {"user_id": {"$eq": user_id}}]},
+        include=[],
     )
+    ids_to_delete = result.get("ids", [])
+    if ids_to_delete:
+        _index._collection.delete(ids=ids_to_delete)
+
     _index.build_bm25_from_collection()
 
     cache = _load_cache(user_id)
     cache["summaries"].pop(name, None)
     _save_cache(user_id, cache)
 
-    return {"status": "ok", "deleted": name}
+    return {"status": "ok", "deleted": name, "chunks_removed": len(ids_to_delete)}
 
 
 @app.post("/query")
