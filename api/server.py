@@ -259,19 +259,21 @@ def _index_file_background(save_path: Path, user_id: str) -> None:
             print(f"[BG] {save_path.name}: no text found", flush=True)
             return
         chunks = adaptive_chunk_text(pages)
-        _index._collection.upsert(
-            ids=[c["chunk_id"] for c in chunks],
-            documents=[c["text"] for c in chunks],
-            metadatas=[
-                {
-                    "source": c["source"],
-                    "token_count": c["token_count"],
-                    "page_num": c["page_num"],
-                    "user_id": user_id,
-                }
-                for c in chunks
-            ],
-        )
+        metadatas = [
+            {"source": c["source"], "token_count": c["token_count"], "page_num": c["page_num"], "user_id": user_id}
+            for c in chunks
+        ]
+        # Batch upserts to stay under OpenAI's 300k-token-per-request embedding limit
+        batch_size = 150
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            batch_meta = metadatas[i : i + batch_size]
+            _index._collection.upsert(
+                ids=[c["chunk_id"] for c in batch],
+                documents=[c["text"] for c in batch],
+                metadatas=batch_meta,
+            )
+            print(f"[BG] {save_path.name}: upserted batch {i // batch_size + 1} ({len(batch)} chunks)", flush=True)
         _index.build_bm25_from_collection()
         print(f"[BG] Done: {save_path.name} — {len(chunks)} chunks from {len(pages)} pages", flush=True)
     except Exception as exc:
