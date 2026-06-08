@@ -37,6 +37,7 @@ CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
 _index: Optional[HybridSearchIndex] = None
 _openai_client: Optional[OpenAI] = None
 _jwks_client: Optional[PyJWKClient] = None
+_bg_errors: list = []  # last N background task errors, for /debug/backend
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +200,41 @@ def debug_auth():
     return info
 
 
+@app.get("/debug/backend")
+def debug_backend():
+    """No-auth full backend health check — shows OpenAI, ChromaDB, and recent BG errors."""
+    info: dict = {
+        "openai_api_key_set": bool(OPENAI_API_KEY),
+        "clerk_jwks_url_set": bool(CLERK_JWKS_URL),
+    }
+    # ChromaDB
+    try:
+        count = _index._collection.count() if _index else -1
+        info["chromadb_status"] = "ok"
+        info["total_chunks_in_db"] = count
+    except Exception as e:
+        info["chromadb_status"] = f"error: {e}"
+
+    # OpenAI connectivity
+    if OPENAI_API_KEY:
+        try:
+            import requests as _req
+            r = _req.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                timeout=5,
+            )
+            info["openai_status"] = "ok" if r.status_code == 200 else f"http_{r.status_code}"
+        except Exception as e:
+            info["openai_status"] = f"error: {e}"
+    else:
+        info["openai_status"] = "NOT_CONFIGURED — embeddings will fail"
+
+    # Recent background task errors
+    info["recent_bg_errors"] = list(_bg_errors[-10:])
+    return info
+
+
 @app.get("/documents")
 def list_documents(user_id: str = Depends(get_current_user)):
     if not _index:
@@ -239,7 +275,11 @@ def _index_file_background(save_path: Path, user_id: str) -> None:
         _index.build_bm25_from_collection()
         print(f"[BG] Done: {save_path.name} — {len(chunks)} chunks from {len(pages)} pages", flush=True)
     except Exception as exc:
-        print(f"[BG] Error indexing {save_path.name}: {exc}", flush=True)
+        msg = f"{save_path.name}: {type(exc).__name__}: {exc}"
+        print(f"[BG] Error indexing {msg}", flush=True)
+        _bg_errors.append(msg)
+        if len(_bg_errors) > 20:
+            _bg_errors.pop(0)
 
 
 @app.post("/upload")
