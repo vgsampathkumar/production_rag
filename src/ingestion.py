@@ -43,7 +43,7 @@ def _ocr_page(fitz_page) -> str:
     import pytesseract
     from PIL import Image
     import io
-    pix = fitz_page.get_pixmap(dpi=300)
+    pix = fitz_page.get_pixmap(dpi=150)
     img = Image.open(io.BytesIO(pix.tobytes("png")))
     return pytesseract.image_to_string(img)
 

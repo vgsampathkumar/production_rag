@@ -1,0 +1,8 @@
+/requirements.txt
+/api/
+/src/
+/chroma_store/
+/data/
+/eval/
+/implementation_plan/
+*.py
