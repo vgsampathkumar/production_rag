@@ -66,7 +66,7 @@ Find it in Clerk dashboard → **Configure → Developers → API Keys** → scr
 
 **Frontend** (`ui/.env.local` for local, Vercel env vars for production):
 ```
-VITE_CLERK_PUBLISHABLE_KEY=pk_test_cmVsZXZhbnQtZ29vc2UtMTEuY2xlcmsuYWNjb3VudHMuZGV2JA
+VITE_CLERK_PUBLISHABLE_KEY=pk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 **Backend** (`.env` for local, HF Space Secrets for production):

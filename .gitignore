@@ -41,3 +41,11 @@ desktop.ini
 # Temp / logs
 *.log
 *.tmp
+
+.vercel
+
+recovery-codes.txt
+vercel_recoverycode.txt
+
+# Personal notes / scratch files in implementation_plan
+implementation_plan/*.txt
